@@ -1,0 +1,97 @@
+name: Build Native TrollStore IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Install CocoaPods
+        run: sudo gem install cocoapods
+
+      - name: Install Pods
+        run: pod install --repo-update
+
+      - name: Patch signing and deployment settings
+        run: |
+          /usr/bin/python3 - <<'PY'
+          from pathlib import Path
+          for name in ['Book_Reader.xcodeproj/project.pbxproj', 'Pods/Pods.xcodeproj/project.pbxproj']:
+              p=Path(name)
+              if not p.exists():
+                  continue
+              s=p.read_text()
+              s=s.replace('DEVELOPMENT_TEAM = 9JQXR484NZ;', 'DEVELOPMENT_TEAM = "";')
+              s=s.replace('PRODUCT_BUNDLE_IDENTIFIER = "com.tongwoo.Book-read";', 'PRODUCT_BUNDLE_IDENTIFIER = com.yunhugy.MiniReaderNative;')
+              s=s.replace('IPHONEOS_DEPLOYMENT_TARGET = 8.0;', 'IPHONEOS_DEPLOYMENT_TARGET = 12.0;')
+              s=s.replace('IPHONEOS_DEPLOYMENT_TARGET = 9.0;', 'IPHONEOS_DEPLOYMENT_TARGET = 12.0;')
+              s=s.replace('IPHONEOS_DEPLOYMENT_TARGET = 10.0;', 'IPHONEOS_DEPLOYMENT_TARGET = 12.0;')
+              s=s.replace('IPHONEOS_DEPLOYMENT_TARGET = 11.3;', 'IPHONEOS_DEPLOYMENT_TARGET = 12.0;')
+              s=s.replace('CLANG_ENABLE_OBJC_ARC = YES;', 'CLANG_ENABLE_OBJC_ARC = YES;\n              CLANG_WARN_STRICT_PROTOTYPES = NO;')
+              p.write_text(s)
+          PY
+
+      - name: List schemes
+        run: xcodebuild -list -workspace Book_Reader.xcworkspace
+
+      - name: Build app without signing
+        run: |
+          xcodebuild \
+            -workspace Book_Reader.xcworkspace \
+            -scheme Book_Reader \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            CLANG_WARN_STRICT_PROTOTYPES=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find build -path '*/Release-iphoneos/Book_Reader.app' -type d | head -n 1)
+          echo "APP_PATH=$APP_PATH"
+          test -n "$APP_PATH"
+          rm -rf Payload MiniReaderNative-trollstore.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/MiniReaderNative.app
+          /usr/bin/zip -qry MiniReaderNative-trollstore.ipa Payload
+          ls -lh MiniReaderNative-trollstore.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniReaderNative-trollstore-ipa
+          path: MiniReaderNative-trollstore.ipa
+
+      - name: Publish latest Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: native-latest
+          name: MiniReaderNative 最新版
+          body: |
+            基于开源原生小说阅读器 Book_Reader 改造的 TrollStore 安装包。
+          files: MiniReaderNative-trollstore.ipa
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
